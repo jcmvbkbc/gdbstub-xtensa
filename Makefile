@@ -16,3 +16,6 @@ xs-demo: main.c gdbstub-entry.S gdbstub-fault_handler.S xtensa-stub.c ringbuffer
 
 clean:
 	rm -f xs-debug main-debug.o xtensa-stub.o
+
+armstub: armstub.o
+	$(LD) $(LDFLAGS) $^ -pthread -o $@

@@ -1,0 +1,127 @@
+From bf45c46d6fa11e84cd2c4726ee4b245ac696f2bb Mon Sep 17 00:00:00 2001
+From: Max Filippov <jcmvbkbc@gmail.com>
+Date: Wed, 30 Oct 2013 02:47:47 +0400
+Subject: [PATCH] gdbstub changes
+
+Signed-off-by: Max Filippov <jcmvbkbc@gmail.com>
+---
+ rcpu0-bin/Makefile  | 12 ++++++++++--
+ rcpu1-bin/Makefile  | 13 +++++++++++--
+ src/common/main.c   |  6 ++++++
+ src/infra/re_main.c |  3 +++
+ 4 files changed, 30 insertions(+), 4 deletions(-)
+
+diff --git a/rcpu0-bin/Makefile b/rcpu0-bin/Makefile
+index 6000900..4011290 100755
+--- a/rcpu0-bin/Makefile
++++ b/rcpu0-bin/Makefile
+@@ -59,6 +59,14 @@ HFILES = \
+ ../inc/re_ipsec_crypto.h \
+ ../inc/re_ipsec_ipc.h
+ 
++# gdbstub
++#OFILES += gdbstub-entry.o gdbstub-fault_handler.o
++#CFILES += \
++#../src/gdbstub/xtensa-stub.c \
++#../src/gdbstub/ringbuffer.c
++#XT_INCLUDES += \
++#-I../src/gdbstub
++#XT_CFLAGS += -DUSE_GDBSTUB
+ 
+ OFILES_C = $(foreach a, $(CFILES), $(patsubst ../%.c,%.o,$(a)))
+ DFILES_C = $(foreach a, $(CFILES), $(patsubst ../%.c,%.d,$(a)))
+@@ -103,14 +111,14 @@ $(foreach dfile, $(DFILES_C), $(eval $(call BUILD_DFILE_C,$(dfile))))
+ 
+ ipsec_pe0: $(OFILES) reset.o $(OFILES_C) $(DFILES_C) reset.d
+ 	for i in `seq 1 30`; do \
+-		$(XT_LD) crt1-tiny.o reset.o $(OFILES_C) window-vectors.o -o $@ $(XT_LDFLAGS) && exit 0; \
++		$(XT_LD) $(OFILES) reset.o $(OFILES_C) -o $@ $(XT_LDFLAGS) && exit 0; \
+        		sleep `awk -F. '{ print $$NF%5+1;}' /proc/uptime`; \
+ 	done ; \
+ 	exit 33
+ 
+ ipsec_pe0.minsize: $(OFILES) reset.o $(OFILES_C)
+ 	for i in `seq 1 30`; do \
+-		$(XT_LD) crt1-tiny.o reset.o $(OFILES_C) window-vectors.o -o $@ $(XT_LDFLAGS) -Wl,-r -nostdlib && exit 0; \
++		$(XT_LD) $(OFILES) reset.o $(OFILES_C) -o $@ $(XT_LDFLAGS) -Wl,-r -nostdlib && exit 0; \
+        		sleep `awk -F. '{ print $$NF%5+1;}' /proc/uptime`; \
+ 	done ; \
+ 	exit 33
+diff --git a/rcpu1-bin/Makefile b/rcpu1-bin/Makefile
+index cd2d2f7..9091d7c 100755
+--- a/rcpu1-bin/Makefile
++++ b/rcpu1-bin/Makefile
+@@ -59,6 +59,15 @@ HFILES = \
+ ../inc/re_ipsec_crypto.h \
+ ../inc/re_ipsec_ipc.h
+ 
++# gdbstub
++OFILES += gdbstub-entry.o gdbstub-fault_handler.o
++CFILES += \
++../src/gdbstub/xtensa-stub.c \
++../src/gdbstub/ringbuffer.c
++XT_INCLUDES += \
++-I../src/gdbstub
++XT_CFLAGS += -DUSE_GDBSTUB
++
+ 
+ OFILES_C = $(foreach a, $(CFILES), $(patsubst ../%.c,%.o,$(a)))
+ DFILES_C = $(foreach a, $(CFILES), $(patsubst ../%.c,%.d,$(a)))
+@@ -104,14 +113,14 @@ $(foreach dfile, $(DFILES_C), $(eval $(call BUILD_DFILE_C,$(dfile))))
+ 
+ ipsec_pe1: $(OFILES) reset.o $(OFILES_C) $(DFILES_C) reset.d
+ 	for i in `seq 1 30`; do \
+-		$(XT_LD) crt1-tiny.o reset.o $(OFILES_C) window-vectors.o -o $@ $(XT_LDFLAGS) && exit 0; \
++		$(XT_LD) $(OFILES) reset.o $(OFILES_C) -o $@ $(XT_LDFLAGS) && exit 0; \
+        		sleep `awk -F. '{ print $$NF%5+1;}' /proc/uptime`; \
+ 	done ; \
+ 	exit 33
+ 
+ ipsec_pe1.minsize: $(OFILES) reset.o $(OFILES_C)
+ 	for i in `seq 1 30`; do \
+-		$(XT_LD) crt1-tiny.o reset.o $(OFILES_C) window-vectors.o -o $@ $(XT_LDFLAGS) -Wl,-r -nostdlib && exit 0; \
++		$(XT_LD) $(OFILES) reset.o $(OFILES_C) -o $@ $(XT_LDFLAGS) -Wl,-r -nostdlib && exit 0; \
+        		sleep `awk -F. '{ print $$NF%5+1;}' /proc/uptime`; \
+ 	done ; \
+ 	exit 33
+diff --git a/src/common/main.c b/src/common/main.c
+index cb708cc..2545c2f 100755
+--- a/src/common/main.c
++++ b/src/common/main.c
+@@ -5,6 +5,8 @@
+ #include "re_types.h"
+ #include "re_infra.h"
+ 
++void init_gdbstub(void);
++void breakpoint(void);
+ int main( )
+ {
+   fn_ptr_t p_fn_main;
+@@ -20,6 +22,10 @@ int main( )
+     p_fn_main = (fn_ptr_t) *((uint32 *)0xf6028000);
+   }
+ 
++#ifdef USE_GDBSTUB
++  init_gdbstub();
++  breakpoint();
++#endif
+   p_fn_main(); // Jump to main_loop
+ 	return 0;
+ }
+diff --git a/src/infra/re_main.c b/src/infra/re_main.c
+index a52de78..d1a57de 100755
+--- a/src/infra/re_main.c
++++ b/src/infra/re_main.c
+@@ -96,6 +96,9 @@ void main_loop()
+ 
+ 		g2_re_process_ni();
+ 		g2_re_process_crypto();
++#ifdef USE_GDBSTUB
++		poll_debug_ring();
++#endif
+ 	}
+ 
+ 	/* Never comes here */
+-- 
+1.8.1.4
+

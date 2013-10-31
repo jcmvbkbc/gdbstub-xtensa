@@ -1,0 +1,209 @@
+Gdbstub For Xtensa Cores.
+
+- Overview
+  - What Gdbstub Is
+  - How It Works
+    - Entry And Exit
+    - Registers Inspection/Modification
+    - Memory Inspection/Modification
+    - Breakpoints
+- Implementation Details
+  - Interface With Gdb
+  - Interface With The Rest Of The System
+  - Source Modules
+- Usage Sample
+- References
+
+
+What Gdbstub Is.
+
+Gdbstub is a piece of code that is present on a target system and is able to
+communicate with gdb running on a development system and execute commands on
+its behalf. This allows to use all features of gdb with very resource-limited
+target systems.
+
+
+How It Works.
+
+Entry And Exit.
+
+Gdbstub is activated by a debug event, usually some sort of a breakpoint. It
+implements a handler for the debug vector, on entry it saves all address and
+some special registers, switches to its stack, clears PS.EXCM flag and runs
+its main message loop, void handle_exception(void). It runs on debug interrupt
+level, which is usually the second highest (next to NMI) interrupt level, so
+nothing interrupts it. Once gdbstub is activated it owns the processor
+exclusively, until it is asked to continue executing normal code. On entry to
+handle_exception gdbstub sends current status message to gdb, waits for the
+command, executes it, and sends the reply back to gdb. Commands that continue
+normal code execution make it return from the handle_exception, restore all
+(possibly modified) registers and return from the debug exception.
+
+Sending and receiving messages is done symbol by symbol with calls to
+functions 'void putDebugChar(char)' and 'char getDebugChar(void)'.
+
+To provide a way to break into user code execution with ^C from gdb there must
+be polling for incoming messages from gdb. This polling may be called from
+the idle loop, or from the interrupt handler and once it detects incoming
+symbols it calls 'void breakpoint(void)' to invoke gdbstub in a usual way.
+However if user code creates a condition when polling function is not called
+it will be impossible to interrupt it from the gdb.
+
+
+Registers Inspection/Modification.
+
+All address registers (not only the current window) are saved into the aregs
+array in the entry code and all of them are restored on exit. a0 of the
+current window goes to aregs[0], a1 to aregs[1], a0 of the next window to
+aregs[16] and so on. When gdb requests a value of address register, by
+absolute index or relatively to the current window, such request is served
+from the aregs array. Modification of the address register also goes to aregs
+array.
+
+Some special registers (e.g. those that might be used by C code) are saved
+into the sregs array on entry and restored on exit. Such SRs are called 'late'
+in the code. Others that gdb might request for inspection are read only on
+the first such request by read_sr call from the handle_exception, saved into
+sregs array and marked as read in the sregs_read bit array. If any of them are
+modified, the modification happens in the sregs array and SR is marked as
+modified in the sregs_mod bit array. All modified non-late SRs are restored
+just before leaving handle_exception.
+
+NOTE: There's no way to access SR indirectly by index, so read_sr and write_sr
+use self-modifying code technique to patch RSR/WSR instruction with the
+desired SR number. Thus their code must be placed into writable/executable
+memory.
+
+
+Memory Inspection/Modification.
+
+Gdb commands that inspect/modify memory access specified memory addresses
+directly. In case the address is not mapped/mapped read only such access may
+raise an exception. Such exceptions are intercepted by the fault_handler
+function and indicated to memory access functions through the mem_err flag.
+Depending on whether a handler for the kernel/user exceptions is installed the
+fault_handler is either provided with its own kernel/user exception vectors,
+or is installed on entry to handle_exception and de-installed on exit. In the
+former case an additional file gdbstub-fault_handler.S needs to be included in
+the build, in the latter case LIBC_LEVEL1_HANDLER macro must be defined.
+
+
+Breakpoints.
+
+Gdb may use software or hardware breakpoints. Software breakpoint is installed
+by patching break/break.n instruction to the desired location. Gdb uses memory
+inspection/modification for that and requires no additional support from the
+gdbstub. Hardware breakpoints are installed and cleared by special messages.
+Gdbstub uses IBREAKA/IBREAKENABLE registers to implement them.
+
+
+Implementation Details.
+
+Interface With Gdb
+
+Setup for a debug session includes gdb on a build/debug host connected to G2
+by a network. On the ARM core of G2 runs armstub, that listens to incoming
+network connections and once a connection is established it streams data from
+and to the ring buffers in the shared memory. Gdbstub is linked with the ring
+buffer handler that provides putDebugChar and getDebugChar functions.
+
+
+Interface With The Rest Of The System.
+
+Gdbstub is compiled and linked with the other code that runs on the xtensa
+core. It needs a call to init_gdbstub to initialize its parts and a call to
+breakpoint for the initial breakpoint. If the initial breakpoint is not needed
+(e.g. if calls to breakpoint are inserted into other places of interest, or
+polling for gdb input is enabled) it may be skipped.
+
+Gdbstub provides debug exception handler. In case Kernel/User exception
+handlers are not provided by the other code it provides them too, otherwise
+it expects that multiplexing mechanism based on _xtos_exc_handler_table is
+used.
+
+Gdbstub requires the following memory/string manipulation functions:
+memcpy, memset, strcpy, strncmp.
+
+Big data arrays (stack, sregs, remcom{In,Out}Buffer) may not fit to the
+default .bss section, so they're annotated with the bulk_data attribute, which
+definition may be adjusted as needed.
+
+This gdbstub implementation does not handle multiple processor setup, so it
+must either be compiled for a single core, or its shared memory/static data
+must be additionally isolated for each target processor.
+
+
+Source Modules.
+
+- armstub.c
+  ARM core TCP <-> shared memory proxy server
+
+- gdbstub-entry.S
+  Debug exception vector, entry/exit code for debug exception handler,
+  breakpoint code.
+
+- gdbstub-fault_handler.S
+  Optional Kernel/User exception vectors and fault handler for memory access
+  functions.
+
+- main.c
+- main-debug.c
+- main-sim.c
+  Various main stubs for simulator-based debugging.
+
+- ringbuffer.c
+  gdbstub comminication routines implemented with the ring buffer in shared
+  memory. Base addresses of rx and tx rings are defined here.
+
+- ringbuffer.h
+  Definition of ring buffer structure and helpers. Shared with armstub.
+
+- xtensa-defs.h
+  Various system-specific definitions.
+
+- xtensa-stub.c
+  Xtensa gdbstub implementation.
+
+
+Usage Sample.
+
+This sample is based on pe_ipsec_d-3.0 xtensa firmware in OpenWRT environment.
+
+On the build system:
+- add gdbstub files to the firmware directory
+  $ mkdir -p openwrt-2.4.2011-trunk/feeds/cortina/pe-ipsec-d/{patches,files/src/gdbstub}
+  $ cp gdbstub.patch openwrt-2.4.2011-trunk/feeds/cortina/pe-ipsec-d/patches
+  $ cp *.S openwrt-2.4.2011-trunk/feeds/cortina/pe-ipsec-d/files
+  $ cp *.c *.h openwrt-2.4.2011-trunk/feeds/cortina/pe-ipsec-d/files/src/gdbstub
+
+- build the firmware/OpenWRT image
+  $ make package/feeds/cortina/pe-ipsec-d/compile
+
+- build armstub
+  $ openwrt-2.4.2011-trunk/staging_dir/toolchain-arm_gcc-4.5.1+l_uClibc-0.9.32_eabi/bin/arm-openwrt-linux-gcc armstub.c -pthread -o armstub
+
+On the target system:
+- update OpenWRT image/copy new firmware
+  # scp .../ipsec_pe* /tmp
+  # scp .../armstub /tmp
+
+- load firmware
+  # /rboot/rboot /tmp/ipsec_pe*
+
+- start armstub
+  # /tmp/armstub -r 0x02000000 -t 0x02000800 -p 2345
+
+On the debugger host:
+- run xt-gdb
+  $ xt-gdb --xtensa-core=DC_C_212GP ipsec_pe1
+
+- connect to the target
+  (xt-gdb) target remote <g2-ip-address>:2345
+  0xf6200a4a in initial_breakpoint ()
+
+
+References.
+
+For more details on gdb remote protocol see 'info gdb' node 'Remote Protocol'.
+This gdbstub implementation is based on sparc-stub.c found in gdb sources:
+gdb/stubs/sparc-stub.c.

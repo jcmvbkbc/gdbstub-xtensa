@@ -231,10 +231,13 @@ static unsigned char *mem2hex(const void *mem_, char *buf, int count)
 	mem_err = 0;
 	while (count-- > 0) {
 #ifdef __XTENSA__
-		asm volatile ("_l8ui	%0, %1, 0\n"
-			      : "=r"(ch)
-			      : "r"(mem)
+		unsigned long v;
+		unsigned long addr = (unsigned long)mem;
+		asm volatile ("_l32i	%0, %1, 0\n"
+			      : "=r"(v)
+			      : "r"(addr & ~3)
 			      : "memory");
+		ch = v >> (addr & 3) * 8;
 #endif
 		mem++;
 		if (mem_err)
@@ -262,10 +265,17 @@ static char *hex2mem(const char *buf, void *mem_, int count)
 		ch = hex(*buf++) << 4;
 		ch |= hex(*buf++);
 #ifdef __XTENSA__
-		asm volatile ("_s8i	%0, %1, 0\n"
+		unsigned long tmp;
+		unsigned long addr = (unsigned long)mem;
+		asm volatile ("_l32i	%0, %1, 0\n"
+			      "and	%0, %0, %2\n"
+			      "or	%0, %0, %3\n"
+			      "_s32i	%0, %1, 0\n"
 			      "dhwb	%1, 0\n"
 			      "ihi	%1, 0\n"
-			      : : "r"(ch), "r"(mem)
+			      : "=r"(tmp)
+			      : "r"(addr & ~3), "r"(0xffffffff ^ (0xff << (addr & 3) * 8)),
+			        "r"(ch << (addr & 3) * 8)
 			      : "memory");
 #endif
 		mem++;

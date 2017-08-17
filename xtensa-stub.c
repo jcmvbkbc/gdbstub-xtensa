@@ -273,7 +273,7 @@ static char *hex2mem(const char *buf, void *mem_, int count)
 			      "_s32i	%0, %1, 0\n"
 			      "dhwb	%1, 0\n"
 			      "ihi	%1, 0\n"
-			      : "=r"(tmp)
+			      : "=&r"(tmp)
 			      : "r"(addr & ~3), "r"(0xffffffff ^ (0xff << (addr & 3) * 8)),
 			        "r"(ch << (addr & 3) * 8)
 			      : "memory");
